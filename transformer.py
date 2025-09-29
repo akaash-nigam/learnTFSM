@@ -60,22 +60,44 @@ def qkv_projection_backward(x: np.ndarray, W_Q: np.ndarray, W_K: np.ndarray, W_V
     dXv, dW_V = matmul_backward(x, W_V, dOut)
     return dXq + dXk + dXv, dW_Q, dW_K, dW_V
 
-def multi_head_attention(q: np.ndarray, k: np.ndarray, v: np.ndarray) -> np.ndarray:
+def multi_head_attention(q: np.ndarray, k: np.ndarray, v: np.ndarray, causal: bool = False) -> np.ndarray:
     scale = 1.0 / np.sqrt(q.shape[-1])
-    attn = softmax(q @ np.swapaxes(k, -2, -1) * scale)
+    scores = q @ np.swapaxes(k, -2, -1) * scale
+
+    if causal:
+        # Create causal mask: upper triangular matrix with -inf
+        seq_len = scores.shape[-2]
+        mask = np.triu(np.ones((seq_len, seq_len)), k=1) * -1e10
+        scores = scores + mask
+
+    attn = softmax(scores)
     return attn @ v
 
-def multi_head_attention_backward(q: np.ndarray, k: np.ndarray, v: np.ndarray, dOut: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+def multi_head_attention_backward(q: np.ndarray, k: np.ndarray, v: np.ndarray, dOut: np.ndarray, causal: bool = False) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     Dh = q.shape[-1]
     scale = 1.0 / np.sqrt(Dh)
 
     scores = q @ np.swapaxes(k, -2, -1) * scale
+
+    if causal:
+        # Apply causal mask to scores
+        seq_len = scores.shape[-2]
+        mask = np.triu(np.ones((seq_len, seq_len)), k=1) * -1e10
+        scores = scores + mask
+
     attn = softmax(scores)
 
     dV = np.swapaxes(attn, -2, -1) @ dOut
     dAttn = dOut @ np.swapaxes(v, -2, -1)
 
     dScores = softmax_backward_from_probs(attn, dAttn)
+
+    if causal:
+        # Zero out gradients for masked positions
+        seq_len = dScores.shape[-2]
+        causal_mask = np.tril(np.ones((seq_len, seq_len)))
+        dScores = dScores * causal_mask
+
     dQ = dScores @ k * scale
     dK = np.swapaxes(dScores, -2, -1) @ q * scale
     return dQ, dK, dV
